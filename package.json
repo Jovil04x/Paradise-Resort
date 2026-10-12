@@ -1,0 +1,10 @@
+{
+  "name": "paradise-resort-firebase",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Firebase-ready Paradise Resort booking app",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  }
+}

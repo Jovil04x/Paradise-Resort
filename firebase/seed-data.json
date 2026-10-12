@@ -1,0 +1,56 @@
+{
+  "rooms": [
+    {
+      "id": "ocean-view-suite",
+      "name": "Ocean View Suite",
+      "description": "Spacious suite with panoramic ocean views and modern interiors. Booking includes free resort access.",
+      "pricePerNight": 199,
+      "capacity": 3,
+      "imagePath": "room/1.jpg",
+      "amenities": ["Wi-Fi", "Pool", "Air conditioning", "Breakfast"],
+      "bedType": "King bed",
+      "sizeSqm": 42,
+      "view": "Ocean view",
+      "isActive": true
+    },
+    {
+      "id": "garden-villa",
+      "name": "Garden Villa",
+      "description": "Private villa surrounded by lush gardens, perfect for a tranquil retreat. Free resort access included.",
+      "pricePerNight": 249,
+      "capacity": 4,
+      "imagePath": "room/2.jpg",
+      "amenities": ["Wi-Fi", "Private garden", "Air conditioning", "Breakfast"],
+      "bedType": "Queen beds",
+      "sizeSqm": 55,
+      "view": "Garden view",
+      "isActive": true
+    },
+    {
+      "id": "deluxe-king-room",
+      "name": "Deluxe King Room",
+      "description": "Modern room with king bed, warm tones, and sleek finishes. Complimentary resort access.",
+      "pricePerNight": 149,
+      "capacity": 2,
+      "imagePath": "room/3.jpg",
+      "amenities": ["Wi-Fi", "Pool", "Air conditioning", "Breakfast"],
+      "bedType": "King bed",
+      "sizeSqm": 32,
+      "view": "Resort view",
+      "isActive": true
+    },
+    {
+      "id": "family-suite",
+      "name": "Family Suite",
+      "description": "Comfortable suite ideal for families, featuring extra space and amenities. Free resort access included.",
+      "pricePerNight": 279,
+      "capacity": 5,
+      "imagePath": "room/4.jpg",
+      "amenities": ["Wi-Fi", "Pool", "Kitchenette", "Breakfast"],
+      "bedType": "Two queen beds",
+      "sizeSqm": 68,
+      "view": "Pool view",
+      "isActive": true
+    }
+  ]
+}

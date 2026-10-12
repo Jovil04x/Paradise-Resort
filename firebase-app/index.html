@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Peterlyn's Resort booking portal" />
+    <title>Peterlyn's Resort</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" />
+    <script>
+      const paradiseAppRoot = location.pathname.startsWith('/paradiseresort')
+        ? '/paradiseresort/firebase-app'
+        : '/firebase-app';
+      document.write(`<link rel="stylesheet" href="${paradiseAppRoot}/styles.css">`);
+      document.write(`<script type="module" src="${paradiseAppRoot}/app.js?v=20261012c"><\/script>`);
+    </script>
+  </head>
+  <body>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="app"></div>
+  </body>
+</html>
