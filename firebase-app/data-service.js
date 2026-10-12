@@ -1,28 +1,60 @@
 import { firebaseConfig, hasFirebaseConfig } from './firebase-config.js';
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
-import {
-  createUserWithEmailAndPassword,
-  getAuth,
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  updateProfile
-} from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  query,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where
-} from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
+
+// Only load Firebase over the network when a real Firebase configuration exists.
+// The localStorage demo mode must also work on offline/local-only installations.
+let initializeApp;
+let createUserWithEmailAndPassword;
+let getAuth;
+let onAuthStateChanged;
+let signInWithEmailAndPassword;
+let firebaseSignOut;
+let updateProfile;
+let addDoc;
+let collection;
+let deleteDoc;
+let doc;
+let getDoc;
+let getDocs;
+let getFirestore;
+let query;
+let runTransaction;
+let serverTimestamp;
+let setDoc;
+let updateDoc;
+let where;
+
+if (hasFirebaseConfig) {
+  const [appModule, authModule, firestoreModule] = await Promise.all([
+    import('https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js'),
+    import('https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js'),
+    import('https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js')
+  ]);
+
+  ({ initializeApp } = appModule);
+  ({
+    createUserWithEmailAndPassword,
+    getAuth,
+    onAuthStateChanged,
+    signInWithEmailAndPassword,
+    signOut: firebaseSignOut,
+    updateProfile
+  } = authModule);
+  ({
+    addDoc,
+    collection,
+    deleteDoc,
+    doc,
+    getDoc,
+    getDocs,
+    getFirestore,
+    query,
+    runTransaction,
+    serverTimestamp,
+    setDoc,
+    updateDoc,
+    where
+  } = firestoreModule);
+}
 
 export const firebaseEnabled = hasFirebaseConfig;
 export const ACTIVE_BOOKING_STATUSES = ['pending', 'approved', 'checked_in'];
@@ -85,7 +117,6 @@ export const DEFAULT_ROOMS = [
 const LOCAL_KEYS = {
   users: 'paradise.firebase.local.users',
   bookings: 'paradise.firebase.local.bookings',
-  payments: 'paradise.firebase.local.payments',
   messages: 'paradise.firebase.local.messages',
   user: 'paradise.firebase.local.currentUser'
 };
@@ -147,10 +178,6 @@ function mapBooking(id, data) {
     total: Number(data.total ?? 0),
     createdAt: timestampToIso(data.createdAt)
   };
-}
-
-function mapPayment(id, data) {
-  return { id, ...data, amount: Number(data.amount ?? 0), createdAt: timestampToIso(data.createdAt) };
 }
 
 function profileFromFirebaseUser(user, profile = {}) {
@@ -364,7 +391,6 @@ export async function createBooking({ user, room, checkIn, checkOut, guests }) {
       guests: Number(guests),
       total,
       status: 'pending',
-      paymentStatus: 'unpaid',
       createdAt: nowIso()
     };
     const stored = readLocal(LOCAL_KEYS.bookings, []);
@@ -393,7 +419,6 @@ export async function createBooking({ user, room, checkIn, checkOut, guests }) {
       guests: Number(guests),
       total,
       status: 'pending',
-      paymentStatus: 'unpaid',
       createdAt: serverTimestamp()
     });
     nights.forEach((date, index) => {
@@ -451,7 +476,7 @@ export async function cancelBooking(bookingId, user) {
     const bookings = readLocal(LOCAL_KEYS.bookings, []);
     const booking = bookings.find((item) => item.id === bookingId && item.uid === user.uid);
     if (!booking) throw new Error('BOOKING_NOT_FOUND');
-    if (booking.status !== 'pending' || booking.paymentStatus === 'paid') throw new Error('CANNOT_CANCEL');
+    if (booking.status !== 'pending') throw new Error('CANNOT_CANCEL');
     booking.status = 'cancelled';
     writeLocal(LOCAL_KEYS.bookings, bookings);
     return mapBooking(booking.id, booking);
@@ -462,58 +487,11 @@ export async function cancelBooking(bookingId, user) {
     const snapshot = await transaction.get(bookingRef);
     if (!snapshot.exists() || snapshot.data().uid !== user.uid) throw new Error('BOOKING_NOT_FOUND');
     const booking = mapBooking(snapshot.id, snapshot.data());
-    if (booking.status !== 'pending' || booking.paymentStatus === 'paid') throw new Error('CANNOT_CANCEL');
+    if (booking.status !== 'pending') throw new Error('CANNOT_CANCEL');
     await releaseLocks(transaction, booking);
     transaction.update(bookingRef, { status: 'cancelled', cancelledAt: serverTimestamp() });
   });
   return getBooking(bookingId);
-}
-
-export async function recordPayment(bookingId, user, method, detail) {
-  if (!user) throw new Error('LOGIN_REQUIRED');
-  if (!detail || String(detail).replace(/\D/g, '').length < 4) throw new Error('INVALID_PAYMENT');
-  const reference = `PMT-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-
-  if (!firebaseEnabled) {
-    const bookings = readLocal(LOCAL_KEYS.bookings, []);
-    const booking = bookings.find((item) => item.id === bookingId && item.uid === user.uid);
-    if (!booking) throw new Error('BOOKING_NOT_FOUND');
-    booking.status = 'approved';
-    booking.paymentStatus = 'paid';
-    booking.paymentMethod = method;
-    booking.paymentReference = reference;
-    writeLocal(LOCAL_KEYS.bookings, bookings);
-    const payments = readLocal(LOCAL_KEYS.payments, []);
-    payments.push({ id: localId('payment'), bookingId, uid: user.uid, amount: booking.total, method, status: 'success', reference, createdAt: nowIso() });
-    writeLocal(LOCAL_KEYS.payments, payments);
-    return reference;
-  }
-
-  const bookingRef = doc(firestore, 'bookings', bookingId);
-  const paymentRef = doc(collection(firestore, 'payments'));
-  await runTransaction(firestore, async (transaction) => {
-    const snapshot = await transaction.get(bookingRef);
-    if (!snapshot.exists() || snapshot.data().uid !== user.uid) throw new Error('BOOKING_NOT_FOUND');
-    const booking = snapshot.data();
-    if (booking.status === 'cancelled') throw new Error('BOOKING_CANCELLED');
-    transaction.update(bookingRef, {
-      status: 'approved',
-      paymentStatus: 'paid',
-      paymentMethod: method,
-      paymentReference: reference,
-      paidAt: serverTimestamp()
-    });
-    transaction.set(paymentRef, {
-      bookingId,
-      uid: user.uid,
-      amount: Number(booking.total || 0),
-      method,
-      status: 'success',
-      reference,
-      createdAt: serverTimestamp()
-    });
-  });
-  return reference;
 }
 
 export async function sendContactMessage(user, name, email, message) {
@@ -558,7 +536,6 @@ export async function updateBookingStatus(bookingId, status, user) {
     const booking = bookings.find((item) => item.id === bookingId);
     if (!booking) throw new Error('BOOKING_NOT_FOUND');
     booking.status = status;
-    if (status === 'rejected' || status === 'cancelled') booking.paymentStatus = booking.paymentStatus || 'unpaid';
     writeLocal(LOCAL_KEYS.bookings, bookings);
     return;
   }

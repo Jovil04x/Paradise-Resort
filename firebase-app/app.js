@@ -7,18 +7,16 @@ import {
   enumerateNights,
   firebaseModeLabel,
   getAllBookings,
-  getBooking,
   getMyBookings,
   getRoomAvailability,
   getRooms,
   observeUser,
-  recordPayment,
   registerUser,
   sendContactMessage,
   signIn,
   signOut,
   updateBookingStatus
-} from './data-service.js';
+} from './data-service.js?v=20261012f';
 
 const app = document.getElementById('app');
 const toast = document.getElementById('toast');
@@ -46,12 +44,16 @@ const state = {
   availability: null,
   availabilityRoom: null,
   availabilityLoading: false,
+  availabilityAttemptedFor: null,
+  availabilityError: null,
   calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   booking: { checkIn: '', checkOut: '', guests: 1 },
   bookings: [],
   bookingsLoading: false,
+  bookingsLoadedFor: null,
   adminBookings: [],
   adminLoading: false,
+  adminLoadedFor: null,
   roomSearch: '',
   guestSearch: '',
   navOpen: false
@@ -91,7 +93,7 @@ function parseRoute() {
   const hash = location.hash.replace(/^#\/?/, '');
   const [path, param] = hash.split('/');
   if (path === 'book') return { name: 'book', param };
-  if (path === 'payment') return { name: 'payment', param };
+  if (path === 'payment') return { name: 'bookings' };
   if (path === 'login') return { name: 'login' };
   if (path === 'register') return { name: 'register' };
   if (path === 'bookings') return { name: 'bookings' };
@@ -122,9 +124,8 @@ function friendlyError(error) {
     DATE_UNAVAILABLE: 'One or more selected nights were just booked. Please choose another range.',
     INVALID_DATES: 'Please choose a valid check-in and check-out range.',
     BOOKING_NOT_FOUND: 'Booking not found or you do not have access to it.',
-    CANNOT_CANCEL: 'Only unpaid pending bookings can be cancelled.',
+    CANNOT_CANCEL: 'Only pending bookings can be cancelled.',
     BOOKING_CANCELLED: 'This booking has already been cancelled.',
-    INVALID_PAYMENT: 'Enter a valid payment detail to continue.',
     MISSING_MESSAGE_FIELDS: 'Please complete all contact fields.',
     ADMIN_REQUIRED: 'Admin access is required for this page.'
   };
@@ -311,7 +312,7 @@ function renderBooking() {
         <div class="calendar-weekdays">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => `<span>${day}</span>`).join('')}</div>
         <div class="date-bars">${loading ? '<div class="calendar-loading">Checking booked dates…</div>' : calendarDays(month).map(renderDateBar).join('')}</div>
         <div class="calendar-legend"><span><i class="legend-dot legend-dot--available"></i>Available</span><span><i class="legend-dot legend-dot--booked"></i>Booked</span><span><i class="legend-dot legend-dot--blocked"></i>Past / blocked</span><span><i class="legend-dot legend-dot--selected"></i>Selected</span></div>
-        <form class="booking-form" data-form="booking"><div class="selected-summary"><div><span>Check-in</span><strong>${prettyDate(state.booking.checkIn)}</strong></div><div class="summary-arrow">→</div><div><span>Check-out</span><strong>${prettyDate(state.booking.checkOut)}</strong></div><div class="summary-total"><span>${nights ? `${nights} night${nights === 1 ? '' : 's'}` : 'Choose dates'}</span><strong>${nights ? money(total) : '—'}</strong></div></div><label><span>Guests</span><input type="number" name="guests" min="1" max="${room.capacity}" value="${state.booking.guests}" required /></label>${state.user ? `<button class="button button--primary button--full" type="submit" ${!state.booking.checkIn || !state.booking.checkOut || loading ? 'disabled' : ''}>Request booking <span>→</span></button>` : '<a class="button button--primary button--full" href="#/login">Log in to continue <span>→</span></a>'}<p class="form-help">Your dates are protected by a transaction when you submit. Pending bookings hold the selected nights until payment or cancellation.</p></form>
+        <form class="booking-form" data-form="booking"><div class="selected-summary"><div><span>Check-in</span><strong>${prettyDate(state.booking.checkIn)}</strong></div><div class="summary-arrow">→</div><div><span>Check-out</span><strong>${prettyDate(state.booking.checkOut)}</strong></div><div class="summary-total"><span>${nights ? `${nights} night${nights === 1 ? '' : 's'}` : 'Choose dates'}</span><strong>${nights ? money(total) : '—'}</strong></div></div><label><span>Guests</span><input type="number" name="guests" min="1" max="${room.capacity}" value="${state.booking.guests}" required /></label>${state.user ? `<button class="button button--primary button--full" type="submit" ${!state.booking.checkIn || !state.booking.checkOut || loading ? 'disabled' : ''}>Request booking <span>→</span></button>` : '<a class="button button--primary button--full" href="#/login">Log in to continue <span>→</span></a>'}<p class="form-help">Your dates are protected when you submit. Pending bookings wait for resort approval and can be cancelled before approval.</p></form>
       </div>
     </div>
   </section>`;
@@ -326,16 +327,31 @@ function statusClass(status) {
   return `status-pill status-pill--${String(status || '').replace('_', '-')}`;
 }
 
-function renderBookings() {
+/* Legacy payment UI kept out of the active booking-only flow. */
+/*
+function renderBookingsLegacy() {
   if (!state.user) return `<div class="shell page-section"><div class="empty-panel">Please <a href="#/login">log in</a> to see your bookings.</div></div>`;
   if (state.bookingsLoading) return '<div class="shell page-section"><div class="loading-panel">Loading your bookings…</div></div>';
   return `<section class="shell page-section"><div class="section-heading-row"><div><div class="eyebrow">YOUR ESCAPE, ORGANIZED</div><h1>My bookings</h1></div><a class="button button--dark" href="#rooms">Book another stay <span>→</span></a></div>${state.bookings.length ? `<div class="booking-list">${state.bookings.map((booking) => { const room = booking.room || {}; return `<article class="booking-card"><img src="${escapeHtml(assetPath(booking.roomImagePath || room.imagePath || 'room/1.jpg'))}" alt="${escapeHtml(booking.roomName || room.name || 'Room')}" /><div class="booking-card-body"><div class="booking-card-heading"><div><h3>${escapeHtml(booking.roomName || room.name || 'Room')}</h3><p>${prettyDate(booking.checkIn)} → ${prettyDate(booking.checkOut)} · ${booking.guests} guest${booking.guests === 1 ? '' : 's'}</p></div><span class="${statusClass(booking.status)}">${escapeHtml(booking.status)}</span></div><div class="booking-card-footer"><span>${booking.paymentStatus === 'paid' ? 'Paid' : 'Payment pending'} · ${money(booking.total)}</span><div class="inline-actions">${booking.status === 'pending' && booking.paymentStatus !== 'paid' ? `<a class="button button--primary button--small" href="#/payment/${booking.id}">Pay now</a><button class="text-button" data-cancel-booking="${escapeHtml(booking.id)}">Cancel</button>` : ''}</div></div></div></article>`; }).join('')}</div>` : '<div class="empty-panel">No bookings yet. Your next quiet morning starts with a room. <a href="#rooms">Browse rooms</a>.</div>'}</section>`;
 }
 
-function renderPayment(booking) {
+function renderPaymentLegacy(booking) {
   if (!booking) return '<div class="shell page-section"><div class="empty-panel">Booking not found. <a href="#/bookings">Back to bookings</a>.</div></div>';
   const room = booking.room || {};
   return `<section class="shell page-section narrow-page"><div class="payment-card"><div class="eyebrow">STEP 2 OF 2</div><h1>Confirm your stay.</h1><p>Complete the demo payment below to mark this booking as approved. Replace this simulation with your preferred payment gateway before going live.</p><div class="payment-summary"><img src="${escapeHtml(assetPath(booking.roomImagePath || room.imagePath || 'room/1.jpg'))}" alt="${escapeHtml(booking.roomName || room.name || 'Room')}" /><div><strong>${escapeHtml(booking.roomName || room.name || 'Room')}</strong><span>${prettyDate(booking.checkIn)} → ${prettyDate(booking.checkOut)}</span><span>${countNights(booking.checkIn, booking.checkOut)} night${countNights(booking.checkIn, booking.checkOut) === 1 ? '' : 's'}</span><b>${money(booking.total)}</b></div></div><form data-form="payment"><label><span>Payment method</span><select name="method"><option value="card">Credit / debit card</option><option value="gcash">GCash</option><option value="maya">Maya</option></select></label><label><span>Payment detail</span><input name="detail" inputmode="numeric" placeholder="Enter a test card or wallet number" required /></label><button class="button button--primary button--full" type="submit">Pay ${money(booking.total)} <span>→</span></button></form><a class="back-link" href="#/bookings">← Back to my bookings</a></div></section>`;
+}
+
+*/
+function renderBookings() {
+  if (!state.user) return `<div class="shell page-section"><div class="empty-panel">Please <a href="#/login">log in</a> to see your bookings.</div></div>`;
+  if (state.bookingsLoading) return '<div class="shell page-section"><div class="loading-panel">Loading your bookings…</div></div>';
+  const cards = state.bookings.map((booking) => {
+    const room = booking.room || {};
+    const statusLabel = booking.status === 'approved' ? 'Confirmed' : booking.status === 'pending' ? 'Booking request' : booking.status;
+    const canCancel = booking.status === 'pending';
+    return `<article class="booking-card"><img src="${escapeHtml(assetPath(booking.roomImagePath || room.imagePath || 'room/1.jpg'))}" alt="${escapeHtml(booking.roomName || room.name || 'Room')}" /><div class="booking-card-body"><div class="booking-card-heading"><div><h3>${escapeHtml(booking.roomName || room.name || 'Room')}</h3><p>${prettyDate(booking.checkIn)} → ${prettyDate(booking.checkOut)} · ${booking.guests} guest${booking.guests === 1 ? '' : 's'}</p></div><span class="${statusClass(booking.status)}">${escapeHtml(statusLabel)}</span></div><div class="booking-card-footer"><span>${escapeHtml(statusLabel)} · ${money(booking.total)}</span><div class="inline-actions">${canCancel ? `<button class="text-button" data-cancel-booking="${escapeHtml(booking.id)}">Cancel</button>` : ''}</div></div></div></article>`;
+  }).join('');
+  return `<section class="shell page-section"><div class="section-heading-row"><div><div class="eyebrow">YOUR ESCAPE, ORGANIZED</div><h1>My bookings</h1></div><a class="button button--dark" href="#rooms">Book another stay <span>→</span></a></div>${state.bookings.length ? `<div class="booking-list">${cards}</div>` : '<div class="empty-panel">No bookings yet. Your next quiet morning starts with a room. <a href="#rooms">Browse rooms</a>.</div>'}</section>`;
 }
 
 function renderContact() {
@@ -345,15 +361,23 @@ function renderContact() {
 function renderAdmin() {
   if (!state.user || state.user.role !== 'admin') return '<div class="shell page-section"><div class="empty-panel">Admin access is required. <a href="#/login">Log in</a>.</div></div>';
   if (state.adminLoading) return '<div class="shell page-section"><div class="loading-panel">Loading admin bookings…</div></div>';
+  const rows = state.adminBookings.map((booking) => `<tr><td><strong>${escapeHtml(booking.email || booking.uid || 'Guest')}</strong><small>${escapeHtml(booking.uid || '')}</small></td><td>${escapeHtml(booking.roomName || booking.room?.name || booking.roomId)}</td><td>${prettyDate(booking.checkIn)}<br />→ ${prettyDate(booking.checkOut)}</td><td>${money(booking.total)}</td><td><span class="${statusClass(booking.status)}">${escapeHtml(booking.status)}</span></td><td><select data-admin-status="${escapeHtml(booking.id)}"><option value="">Update…</option><option value="approved">Approve</option><option value="rejected">Reject</option><option value="cancelled">Cancel</option><option value="checked_in">Check in</option><option value="completed">Complete</option></select></td></tr>`).join('');
+  return `<section class="shell page-section"><div class="section-heading-row"><div><div class="eyebrow">RESORT OPERATIONS</div><h1>Booking calendar</h1><p class="section-subtitle">Approve, reject, or cancel reservations. Rejected and cancelled bookings release their locked nights.</p></div><div class="mode-chip"><span class="status-dot"></span>${state.adminBookings.length} total</div></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Guest</th><th>Room</th><th>Dates</th><th>Total</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty-cell">No bookings yet.</td></tr>'}</tbody></table></div></section>`;
+}
+
+/*
+function renderAdminLegacy() {
+  if (!state.user || state.user.role !== 'admin') return '<div class="shell page-section"><div class="empty-panel">Admin access is required. <a href="#/login">Log in</a>.</div></div>';
+  if (state.adminLoading) return '<div class="shell page-section"><div class="loading-panel">Loading admin bookings…</div></div>';
   return `<section class="shell page-section"><div class="section-heading-row"><div><div class="eyebrow">RESORT OPERATIONS</div><h1>Booking calendar</h1><p class="section-subtitle">Approve, reject, or cancel reservations. Rejected and cancelled bookings release their locked nights.</p></div><div class="mode-chip"><span class="status-dot"></span>${state.adminBookings.length} total</div></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Guest</th><th>Room</th><th>Dates</th><th>Payment</th><th>Status</th><th>Action</th></tr></thead><tbody>${state.adminBookings.length ? state.adminBookings.map((booking) => `<tr><td><strong>${escapeHtml(booking.email || booking.uid || 'Guest')}</strong><small>${escapeHtml(booking.uid || '')}</small></td><td>${escapeHtml(booking.roomName || booking.room?.name || booking.roomId)}</td><td>${prettyDate(booking.checkIn)}<br />→ ${prettyDate(booking.checkOut)}</td><td>${booking.paymentStatus === 'paid' ? '<span class="paid-text">Paid</span>' : 'Unpaid'}<br />${money(booking.total)}</td><td><span class="${statusClass(booking.status)}">${escapeHtml(booking.status)}</span></td><td><select data-admin-status="${escapeHtml(booking.id)}"><option value="">Update…</option><option value="approved">Approve</option><option value="rejected">Reject</option><option value="cancelled">Cancel</option><option value="checked_in">Check in</option><option value="completed">Complete</option></select></td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">No bookings yet.</td></tr>'}</tbody></table></div></section>`;
 }
 
+*/
 function renderMain() {
   state.route = parseRoute();
   if (state.route.name === 'book') return renderBooking();
   if (state.route.name === 'login' || state.route.name === 'register') return renderAuth(state.route.name);
   if (state.route.name === 'bookings') return renderBookings();
-  if (state.route.name === 'payment') return renderPayment(state.paymentBooking);
   if (state.route.name === 'contact') return renderContact();
   if (state.route.name === 'admin') return renderAdmin();
   return renderHome();
@@ -366,11 +390,10 @@ function render() {
   }
   state.route = parsedRoute;
   app.innerHTML = `${renderHeader()}<main>${renderMain()}</main>${renderFooter()}`;
-  document.body.classList.toggle('has-dark-page', state.route.name === 'book' || state.route.name === 'payment');
-  if (state.route.name === 'book' && state.activeRoom && state.availabilityRoom !== state.activeRoom.id && !state.availabilityLoading) loadAvailability(state.activeRoom.id);
-  if (state.route.name === 'bookings' && state.user && !state.bookings.length && !state.bookingsLoading) loadBookings();
-  if (state.route.name === 'payment' && state.route.param && !state.paymentBooking && !state.paymentLoading) loadPayment(state.route.param);
-  if (state.route.name === 'admin' && state.user?.role === 'admin' && !state.adminBookings.length && !state.adminLoading) loadAdminBookings();
+  document.body.classList.toggle('has-dark-page', state.route.name === 'book');
+  if (state.route.name === 'book' && state.activeRoom && state.availabilityAttemptedFor !== state.activeRoom.id && !state.availabilityLoading) loadAvailability(state.activeRoom.id);
+  if (state.route.name === 'bookings' && state.user && state.bookingsLoadedFor !== state.user.uid && !state.bookingsLoading) loadBookings();
+  if (state.route.name === 'admin' && state.user?.role === 'admin' && state.adminLoadedFor !== state.user.uid && !state.adminLoading) loadAdminBookings();
 }
 
 async function loadRooms() {
@@ -385,11 +408,14 @@ async function loadRooms() {
 }
 
 async function loadAvailability(roomId) {
+  state.availabilityAttemptedFor = roomId;
+  state.availabilityError = null;
   state.availabilityLoading = true;
   try {
     state.availability = await getRoomAvailability(roomId);
     state.availabilityRoom = roomId;
   } catch (error) {
+    state.availabilityError = friendlyError(error);
     setToast(friendlyError(error), 'error');
   } finally {
     state.availabilityLoading = false;
@@ -398,6 +424,7 @@ async function loadAvailability(roomId) {
 }
 
 async function loadBookings() {
+  state.bookingsLoadedFor = state.user.uid;
   state.bookingsLoading = true;
   render();
   try {
@@ -410,19 +437,8 @@ async function loadBookings() {
   }
 }
 
-async function loadPayment(bookingId) {
-  state.paymentLoading = true;
-  try {
-    state.paymentBooking = await getBooking(bookingId);
-  } catch (error) {
-    setToast(friendlyError(error), 'error');
-  } finally {
-    state.paymentLoading = false;
-    render();
-  }
-}
-
 async function loadAdminBookings() {
+  state.adminLoadedFor = state.user.uid;
   state.adminLoading = true;
   render();
   try {
@@ -439,6 +455,8 @@ function resetBooking(roomId) {
   state.activeRoom = slugToRoom(roomId);
   state.availability = null;
   state.availabilityRoom = null;
+  state.availabilityAttemptedFor = null;
+  state.availabilityError = null;
   state.booking = { checkIn: '', checkOut: '', guests: 1 };
   state.calendarMonth = beginningOfMonth(new Date());
 }
@@ -472,22 +490,14 @@ async function handleSubmit(event) {
     }
     if (form.dataset.form === 'booking') {
       if (!state.activeRoom || !state.booking.checkIn || !state.booking.checkOut) throw new Error('Please select check-in and check-out dates.');
+      if (state.availabilityError) throw new Error('Availability could not be loaded. Please refresh and try again.');
       state.booking.guests = Number(formData.get('guests'));
       if (!state.booking.guests || state.booking.guests > state.activeRoom.capacity) throw new Error(`This room accepts up to ${state.activeRoom.capacity} guests.`);
       if (!rangeIsOpen(state.booking.checkIn, state.booking.checkOut)) throw new Error('One or more selected nights are not available.');
-      const booking = await createBooking({ user: state.user, room: state.activeRoom, ...state.booking });
-      state.paymentBooking = booking;
+      await createBooking({ user: state.user, room: state.activeRoom, ...state.booking });
       state.bookings = [];
-      setToast('Dates held. Complete payment to confirm your stay.', 'success');
-      navigate(`#/payment/${booking.id}`);
-      return;
-    }
-    if (form.dataset.form === 'payment') {
-      if (!state.paymentBooking) throw new Error('Booking not found.');
-      const reference = await recordPayment(state.paymentBooking.id, state.user, String(formData.get('method')), String(formData.get('detail')));
-      state.paymentBooking = null;
-      state.bookings = [];
-      setToast(`Payment recorded. Reference: ${reference}`, 'success');
+      state.bookingsLoadedFor = null;
+      setToast('Booking request submitted.', 'success');
       navigate('#/bookings');
       return;
     }
@@ -547,6 +557,8 @@ async function handleClick(event) {
     state.user = null;
     state.bookings = [];
     state.adminBookings = [];
+    state.bookingsLoadedFor = null;
+    state.adminLoadedFor = null;
     setToast('You have been logged out.', 'success');
     navigate('#/');
     return;
@@ -557,6 +569,7 @@ async function handleClick(event) {
     try {
       await cancelBooking(cancelButton.dataset.cancelBooking, state.user);
       state.bookings = [];
+      state.bookingsLoadedFor = null;
       setToast('Booking cancelled and dates released.', 'success');
       render();
     } catch (error) {
@@ -569,6 +582,7 @@ async function handleClick(event) {
     try {
       await updateBookingStatus(statusSelect.dataset.adminStatus, statusSelect.value, state.user);
       state.adminBookings = [];
+      state.adminLoadedFor = null;
       setToast('Booking status updated.', 'success');
       render();
     } catch (error) {
@@ -582,9 +596,14 @@ app.addEventListener('click', handleClick);
 window.addEventListener('hashchange', () => {
   const route = parseRoute();
   state.navOpen = false;
-  if (route.name !== 'payment') state.paymentBooking = null;
-  if (route.name !== 'bookings') state.bookings = [];
-  if (route.name !== 'admin') state.adminBookings = [];
+  if (route.name !== 'bookings') {
+    state.bookings = [];
+    state.bookingsLoadedFor = null;
+  }
+  if (route.name !== 'admin') {
+    state.adminBookings = [];
+    state.adminLoadedFor = null;
+  }
   render();
 });
 
@@ -593,6 +612,8 @@ observeUser((user) => {
   if (state.route?.name === 'bookings' || state.route?.name === 'admin') {
     state.bookings = [];
     state.adminBookings = [];
+    state.bookingsLoadedFor = null;
+    state.adminLoadedFor = null;
   }
   render();
 });
