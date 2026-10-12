@@ -7,9 +7,9 @@ The Firebase-ready app is in `firebase-app/`. It runs without a build step and u
 1. Create a Firebase project and a Web App in the Firebase Console.
 2. Enable **Authentication > Sign-in method > Email/Password**.
 3. Create a Firestore database in production mode.
-4. Copy the web app config into `firebase-app/firebase-config.js`.
+4. Enable **Storage**, then copy the web app config (including `storageBucket`) into `firebase-app/firebase-config.js`.
 5. Import the four room documents from `firebase/seed-data.json` into the `rooms` collection. The document IDs in the JSON should be preserved.
-6. Publish `firestore.rules` in the Firestore Rules tab.
+6. Publish `firestore.rules` in the Firestore Rules tab and `storage.rules` in the Storage Rules tab.
 7. To create an admin, register a normal account first, then change that user's `users/{uid}.role` value to `admin` in Firestore.
 
 The web config is not a secret. Never put a Firebase service-account JSON file or private key in this repository.
@@ -25,6 +25,10 @@ node server.mjs
 Open [http://localhost:3000](http://localhost:3000). If Firebase config is still blank, the app shows a local-demo badge and stores users, rooms, bookings, payments, and messages in this browser only.
 
 When using XAMPP, `http://localhost/paradiseresort/` now redirects to the same Firebase app. The old PHP/MySQL landing page remains available temporarily at `http://localhost/paradiseresort/index.php?legacy=1`.
+
+## Messaging and picture sharing
+
+The `Messages` page provides a Messenger-style conversation between each customer and the resort team. Text messages are saved in `conversations/{customerUid}/messages`. Picture attachments are uploaded to Firebase Storage under `chat-images/` and the resulting URL is saved with the message. In local demo mode, text and small pictures are kept in this browser's `localStorage`; local picture attachments are limited to 1.5 MB.
 
 ## 3. Deploy to Vercel
 

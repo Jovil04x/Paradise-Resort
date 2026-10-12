@@ -16,18 +16,25 @@ let doc;
 let getDoc;
 let getDocs;
 let getFirestore;
+let getDownloadURL;
+let getStorage;
+let onSnapshot;
+let orderBy;
 let query;
 let runTransaction;
 let serverTimestamp;
 let setDoc;
+let storageRef;
+let uploadBytes;
 let updateDoc;
 let where;
 
 if (hasFirebaseConfig) {
-  const [appModule, authModule, firestoreModule] = await Promise.all([
+  const [appModule, authModule, firestoreModule, storageModule] = await Promise.all([
     import('https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js'),
     import('https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js'),
-    import('https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js')
+    import('https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js'),
+    import('https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js')
   ]);
 
   ({ initializeApp } = appModule);
@@ -47,6 +54,8 @@ if (hasFirebaseConfig) {
     getDoc,
     getDocs,
     getFirestore,
+    onSnapshot,
+    orderBy,
     query,
     runTransaction,
     serverTimestamp,
@@ -54,6 +63,7 @@ if (hasFirebaseConfig) {
     updateDoc,
     where
   } = firestoreModule);
+  ({ getDownloadURL, getStorage, ref: storageRef, uploadBytes } = storageModule);
 }
 
 export const firebaseEnabled = hasFirebaseConfig;
@@ -118,12 +128,14 @@ const LOCAL_KEYS = {
   users: 'paradise.firebase.local.users',
   bookings: 'paradise.firebase.local.bookings',
   messages: 'paradise.firebase.local.messages',
+  chatMessages: 'paradise.firebase.local.chatMessages',
   user: 'paradise.firebase.local.currentUser'
 };
 
 const firebaseApp = firebaseEnabled ? initializeApp(firebaseConfig) : null;
 const auth = firebaseApp ? getAuth(firebaseApp) : null;
 const firestore = firebaseApp ? getFirestore(firebaseApp) : null;
+const storage = firebaseApp && firebaseConfig.storageBucket ? getStorage(firebaseApp) : null;
 const ROOMS_TTL_MS = 60_000;
 let roomsCache = { expires: 0, rooms: null };
 
@@ -508,6 +520,220 @@ export async function sendContactMessage(user, name, email, message) {
     email,
     message,
     createdAt: serverTimestamp()
+  });
+}
+
+function mapChatMessage(id, data) {
+  return {
+    id,
+    conversationId: data.conversationId || '',
+    customerUid: data.customerUid || '',
+    senderUid: data.senderUid || '',
+    senderName: data.senderName || 'User',
+    senderRole: data.senderRole || 'customer',
+    text: data.text || '',
+    imageUrl: data.imageUrl || '',
+    imageName: data.imageName || '',
+    createdAt: timestampToIso(data.createdAt)
+  };
+}
+
+function mapChatConversation(id, data) {
+  return {
+    id,
+    customerUid: data.customerUid || id,
+    customerName: data.customerName || 'Customer',
+    customerEmail: data.customerEmail || '',
+    lastMessage: data.lastMessage || '',
+    lastMessageAt: timestampToIso(data.lastMessageAt || data.updatedAt || data.createdAt),
+    lastSenderUid: data.lastSenderUid || ''
+  };
+}
+
+function chatConversationForUser(user, conversationId) {
+  return {
+    id: conversationId || user.uid,
+    customerUid: user.role === 'admin' ? conversationId : user.uid,
+    customerName: user.role === 'admin' ? '' : user.fullName,
+    customerEmail: user.role === 'admin' ? '' : user.email
+  };
+}
+
+function localChatMessages() {
+  return readLocal(LOCAL_KEYS.chatMessages, []).map((message) => mapChatMessage(message.id, message));
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => resolve(String(reader.result || '')));
+    reader.addEventListener('error', () => reject(new Error('IMAGE_READ_FAILED')));
+    reader.readAsDataURL(file);
+  });
+}
+
+function safeFileName(name) {
+  return String(name || 'image').replace(/[^a-z0-9._-]/gi, '-').slice(-80) || 'image';
+}
+
+export async function getChatConversations(user) {
+  if (!user) return [];
+  if (!firebaseEnabled) {
+    const messages = localChatMessages();
+    const users = readLocal(LOCAL_KEYS.users, []);
+    const conversationIds = user.role === 'admin'
+      ? [...new Set(messages.map((message) => message.customerUid).filter(Boolean))]
+      : messages.some((message) => message.customerUid === user.uid) ? [user.uid] : [];
+    return conversationIds.map((conversationId) => {
+      const conversationMessages = messages
+        .filter((message) => message.customerUid === conversationId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const customer = users.find((item) => item.uid === conversationId) || {};
+      const lastMessage = conversationMessages[0];
+      return mapChatConversation(conversationId, {
+        customerUid: conversationId,
+        customerName: customer.fullName || (conversationId === user.uid ? user.fullName : 'Customer'),
+        customerEmail: customer.email || '',
+        lastMessage: lastMessage ? (lastMessage.text || (lastMessage.imageUrl ? '📷 Photo' : '')) : '',
+        lastMessageAt: lastMessage?.createdAt || nowIso(),
+        lastSenderUid: lastMessage?.senderUid || ''
+      });
+    }).sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+  }
+
+  const conversationsQuery = user.role === 'admin'
+    ? collection(firestore, 'conversations')
+    : query(collection(firestore, 'conversations'), where('customerUid', '==', user.uid));
+  const snapshot = await getDocs(conversationsQuery);
+  return snapshot.docs
+    .map((item) => mapChatConversation(item.id, item.data()))
+    .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+}
+
+export function observeChatConversations(user, callback) {
+  if (!user) {
+    callback([]);
+    return () => {};
+  }
+  if (!firebaseEnabled) {
+    getChatConversations(user).then(callback).catch(() => callback([]));
+    return () => {};
+  }
+  const conversationsQuery = user.role === 'admin'
+    ? collection(firestore, 'conversations')
+    : query(collection(firestore, 'conversations'), where('customerUid', '==', user.uid));
+  return onSnapshot(
+    conversationsQuery,
+    (snapshot) => callback(snapshot.docs
+      .map((item) => mapChatConversation(item.id, item.data()))
+      .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt))),
+    () => callback([])
+  );
+}
+
+export function observeChatMessages(user, conversationId, callback) {
+  if (!user || !conversationId) {
+    callback([]);
+    return () => {};
+  }
+  if (!firebaseEnabled) {
+    callback(localChatMessages()
+      .filter((message) => message.conversationId === conversationId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+    return () => {};
+  }
+  const messagesQuery = query(
+    collection(firestore, 'conversations', conversationId, 'messages'),
+    orderBy('createdAt', 'asc')
+  );
+  return onSnapshot(
+    messagesQuery,
+    (snapshot) => callback(snapshot.docs.map((item) => mapChatMessage(item.id, item.data()))),
+    () => callback([])
+  );
+}
+
+export async function sendChatMessage(user, conversationId, text, file) {
+  if (!user) throw new Error('LOGIN_REQUIRED');
+  const messageText = String(text || '').trim();
+  const conversation = chatConversationForUser(user, conversationId);
+  if (!messageText && !file) throw new Error('CHAT_EMPTY');
+  if (file && !String(file.type || '').startsWith('image/')) throw new Error('INVALID_IMAGE');
+  if (file && file.size > 5 * 1024 * 1024) throw new Error('IMAGE_TOO_LARGE');
+
+  if (!firebaseEnabled) {
+    if (file && file.size > 1.5 * 1024 * 1024) throw new Error('IMAGE_TOO_LARGE_LOCAL');
+    const imageUrl = file ? await fileToDataUrl(file) : '';
+    const stored = readLocal(LOCAL_KEYS.chatMessages, []);
+    const message = {
+      id: localId('chat'),
+      conversationId: conversation.id,
+      customerUid: conversation.customerUid,
+      senderUid: user.uid,
+      senderName: user.fullName,
+      senderRole: user.role,
+      text: messageText,
+      imageUrl,
+      imageName: file?.name || '',
+      createdAt: nowIso()
+    };
+    stored.push(message);
+    writeLocal(LOCAL_KEYS.chatMessages, stored);
+    return mapChatMessage(message.id, message);
+  }
+
+  const conversationRef = doc(firestore, 'conversations', conversation.id);
+  const conversationSnapshot = await getDoc(conversationRef);
+  if (!conversationSnapshot.exists()) {
+    if (user.role === 'admin') throw new Error('CHAT_NOT_FOUND');
+    await setDoc(conversationRef, {
+      customerUid: user.uid,
+      customerName: user.fullName,
+      customerEmail: user.email,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      lastMessage: ''
+    });
+  }
+
+  let imageUrl = '';
+  if (file) {
+    if (!storage) throw new Error('STORAGE_NOT_CONFIGURED');
+    const imagePath = `chat-images/${conversation.id}/${user.uid}/${Date.now()}-${safeFileName(file.name)}`;
+    const uploaded = await uploadBytes(storageRef(storage, imagePath), file, { contentType: file.type });
+    imageUrl = await getDownloadURL(uploaded.ref);
+  }
+
+  const messageRef = await addDoc(collection(firestore, 'conversations', conversation.id, 'messages'), {
+    conversationId: conversation.id,
+    customerUid: conversation.customerUid,
+    senderUid: user.uid,
+    senderName: user.fullName,
+    senderRole: user.role,
+    text: messageText,
+    imageUrl,
+    imageName: file?.name || '',
+    createdAt: serverTimestamp()
+  });
+  await setDoc(conversationRef, {
+    customerUid: conversation.customerUid,
+    customerName: conversation.customerName || conversationSnapshot.data()?.customerName || 'Customer',
+    customerEmail: conversation.customerEmail || conversationSnapshot.data()?.customerEmail || '',
+    lastMessage: messageText || '📷 Photo',
+    lastSenderUid: user.uid,
+    lastMessageAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+  return mapChatMessage(messageRef.id, {
+    ...conversation,
+    conversationId: conversation.id,
+    senderUid: user.uid,
+    senderName: user.fullName,
+    senderRole: user.role,
+    text: messageText,
+    imageUrl,
+    imageName: file?.name || '',
+    createdAt: nowIso()
   });
 }
 

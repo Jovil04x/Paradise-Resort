@@ -7,16 +7,19 @@ import {
   enumerateNights,
   firebaseModeLabel,
   getAllBookings,
+  observeChatConversations,
+  observeChatMessages,
   getMyBookings,
   getRoomAvailability,
   getRooms,
   observeUser,
   registerUser,
+  sendChatMessage,
   sendContactMessage,
   signIn,
   signOut,
   updateBookingStatus
-} from './data-service.js?v=20261012f';
+} from './data-service.js?v=20261012g';
 
 const app = document.getElementById('app');
 const toast = document.getElementById('toast');
@@ -54,6 +57,18 @@ const state = {
   adminBookings: [],
   adminLoading: false,
   adminLoadedFor: null,
+  chatConversations: [],
+  chatMessages: [],
+  chatLoading: false,
+  chatMessagesLoading: false,
+  chatSelectedId: null,
+  chatDraft: '',
+  chatFile: null,
+  chatFilePreview: '',
+  chatSubscriptionsFor: null,
+  chatMessagesSubscriptionId: null,
+  chatConversationsUnsubscribe: null,
+  chatMessagesUnsubscribe: null,
   roomSearch: '',
   guestSearch: '',
   navOpen: false
@@ -97,6 +112,7 @@ function parseRoute() {
   if (path === 'login') return { name: 'login' };
   if (path === 'register') return { name: 'register' };
   if (path === 'bookings') return { name: 'bookings' };
+  if (path === 'messages') return { name: 'messages', param };
   if (path === 'contact') return { name: 'contact' };
   if (path === 'admin') return { name: 'admin' };
   return { name: 'home' };
@@ -127,6 +143,13 @@ function friendlyError(error) {
     CANNOT_CANCEL: 'Only pending bookings can be cancelled.',
     BOOKING_CANCELLED: 'This booking has already been cancelled.',
     MISSING_MESSAGE_FIELDS: 'Please complete all contact fields.',
+    CHAT_EMPTY: 'Write a message or choose a picture first.',
+    INVALID_IMAGE: 'Please choose an image file.',
+    IMAGE_TOO_LARGE: 'Images must be 5 MB or smaller.',
+    IMAGE_TOO_LARGE_LOCAL: 'Local demo images must be 1.5 MB or smaller.',
+    IMAGE_READ_FAILED: 'The picture could not be read. Please try again.',
+    STORAGE_NOT_CONFIGURED: 'Firebase Storage is not configured yet. Add the storageBucket value first.',
+    CHAT_NOT_FOUND: 'This conversation is no longer available.',
     ADMIN_REQUIRED: 'Admin access is required for this page.'
   };
   if (messages[code]) return messages[code];
@@ -141,7 +164,7 @@ function renderHeader() {
     ? '<a class="nav-link" href="#/admin">Admin</a>'
     : '';
   const userLinks = state.user
-    ? `<a class="nav-link" href="#/bookings">My bookings</a>${adminLink}<button class="nav-link nav-button" data-action="logout">Log out</button>`
+    ? `<a class="nav-link" href="#/bookings">My bookings</a><a class="nav-link" href="#/messages">Messages</a>${adminLink}<button class="nav-link nav-button" data-action="logout">Log out</button>`
     : '<a class="nav-link" href="#/login">Log in</a><a class="button button--small" href="#/register">Create account</a>';
   return `
     <header class="site-header">
@@ -354,6 +377,52 @@ function renderBookings() {
   return `<section class="shell page-section"><div class="section-heading-row"><div><div class="eyebrow">YOUR ESCAPE, ORGANIZED</div><h1>My bookings</h1></div><a class="button button--dark" href="#rooms">Book another stay <span>→</span></a></div>${state.bookings.length ? `<div class="booking-list">${cards}</div>` : '<div class="empty-panel">No bookings yet. Your next quiet morning starts with a room. <a href="#rooms">Browse rooms</a>.</div>'}</section>`;
 }
 
+function chatTime(value) {
+  if (!value) return '';
+  return new Date(value).toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' });
+}
+
+function chatConversationName(conversation, isAdmin) {
+  if (!isAdmin) return "Peterlyn's Resort team";
+  return conversation?.customerName || conversation?.customerEmail || 'Customer';
+}
+
+function renderChatMessage(message) {
+  const own = message.senderUid === state.user?.uid;
+  const text = message.text ? `<div class="chat-message-text">${escapeHtml(message.text).split(String.fromCharCode(10)).join('<br />')}</div>` : '';
+  const image = message.imageUrl
+    ? `<a class="chat-image-link" href="${escapeHtml(message.imageUrl)}" target="_blank" rel="noopener"><img class="chat-image" src="${escapeHtml(message.imageUrl)}" alt="${escapeHtml(message.imageName || 'Shared picture')}" loading="lazy" /></a>`
+    : '';
+  return `<div class="chat-message-row ${own ? 'chat-message-row--own' : ''}"><div class="chat-message-bubble">${image}${text}<div class="chat-message-meta">${own ? 'You' : escapeHtml(message.senderName || 'User')} · ${chatTime(message.createdAt)}</div></div></div>`;
+}
+
+function renderMessages() {
+  if (!state.user) return '<div class="shell page-section"><div class="empty-panel">Please <a href="#/login">log in</a> to open messages.</div></div>';
+
+  const isAdmin = state.user.role === 'admin';
+  const customerConversation = { id: state.user.uid, customerName: "Peterlyn's Resort team", customerEmail: '' };
+  const conversations = isAdmin ? state.chatConversations : [customerConversation];
+  const routeConversationId = state.route.param;
+  const selectedId = isAdmin
+    ? (routeConversationId || state.chatSelectedId || conversations[0]?.id || '')
+    : state.user.uid;
+  const selectedConversation = conversations.find((item) => item.id === selectedId) || (isAdmin ? null : customerConversation);
+  state.chatSelectedId = selectedConversation?.id || null;
+  const conversationList = conversations.length
+    ? conversations.map((conversation) => {
+      const active = conversation.id === selectedConversation?.id;
+      const preview = conversation.lastMessage || (isAdmin ? 'Start a conversation' : 'Ask us anything about your stay');
+      return `<button type="button" class="chat-conversation ${active ? 'is-active' : ''}" data-chat-conversation="${escapeHtml(conversation.id)}"><span class="chat-avatar">${escapeHtml(chatConversationName(conversation, isAdmin).slice(0, 1).toUpperCase())}</span><span class="chat-conversation-copy"><strong>${escapeHtml(chatConversationName(conversation, isAdmin))}</strong><small>${escapeHtml(preview)}</small></span>${conversation.lastMessageAt ? `<time>${chatTime(conversation.lastMessageAt)}</time>` : ''}</button>`;
+    }).join('')
+    : '<div class="chat-list-empty">No customer conversations yet.</div>';
+
+  const thread = selectedConversation
+    ? `<div class="chat-thread-header"><div><div class="eyebrow">${isAdmin ? 'CUSTOMER CONVERSATION' : 'RESORT SUPPORT'}</div><h2>${escapeHtml(chatConversationName(selectedConversation, isAdmin))}</h2><p>${isAdmin ? escapeHtml(selectedConversation.customerEmail || 'Send a message to this customer.') : 'We usually reply as soon as possible.'}</p></div><span class="chat-online"><span></span>${isAdmin ? 'Support inbox' : 'Online'}</span></div><div class="chat-messages" aria-live="polite">${state.chatMessagesLoading ? '<div class="chat-thread-empty">Loading messages…</div>' : state.chatMessages.length ? state.chatMessages.map(renderChatMessage).join('') : '<div class="chat-thread-empty"><strong>Start the conversation</strong><span>Send a message or share a picture with the resort team.</span></div>'}</div><form class="chat-composer" data-form="chat-message"><div class="chat-attachment-preview ${state.chatFilePreview ? 'is-visible' : ''}">${state.chatFilePreview ? `<img src="${escapeHtml(state.chatFilePreview)}" alt="Selected picture" /><span>${escapeHtml(state.chatFile?.name || 'Picture selected')}</span><button type="button" class="chat-remove-file" data-action="remove-chat-file" aria-label="Remove selected picture">×</button>` : ''}</div><textarea name="message" data-chat-draft rows="1" maxlength="2000" placeholder="Write a message…">${escapeHtml(state.chatDraft || '')}</textarea><div class="chat-composer-footer"><label class="chat-attach-button"><input type="file" name="image" accept="image/*" data-chat-file /><span>＋</span>Photo</label><span class="chat-composer-hint">Images up to 5 MB</span><button class="button button--primary chat-send-button" type="submit">Send <span>→</span></button></div></form>`
+    : '<div class="chat-no-selection"><strong>Select a conversation</strong><span>Customer messages will appear here.</span></div>';
+
+  return `<section class="shell page-section messages-page"><div class="section-heading-row messages-heading"><div><div class="eyebrow">DIRECT SUPPORT</div><h1>Messages</h1><p class="section-subtitle">Chat with the resort team and share booking details or pictures.</p></div><div class="mode-chip"><span class="status-dot"></span>${isAdmin ? 'Customer inbox' : 'Resort support'}</div></div><div class="messenger"><aside class="chat-sidebar"><div class="chat-sidebar-heading"><strong>${isAdmin ? 'Conversations' : 'Support'}</strong><span>${conversations.length}</span></div><div class="chat-conversation-list">${conversationList}</div></aside><section class="chat-panel">${thread}</section></div></section>`;
+}
+
 function renderContact() {
   return `<section class="shell page-section contact-page"><div class="contact-intro"><div class="eyebrow">WE'D LOVE TO HEAR FROM YOU</div><h1>Let's make your<br /><em>stay memorable.</em></h1><p>Questions about rooms, dates, or resort access? Send a note and our team will get back to you.</p><div class="contact-detail"><strong>Seaside Blvd, PH</strong><span>+63 900 000 0000</span><span>support@peterlynresort.com</span></div></div><div class="contact-card"><form data-form="contact"><label><span>Your name</span><input name="name" value="${escapeHtml(state.user?.fullName || '')}" required /></label><label><span>Email</span><input type="email" name="email" value="${escapeHtml(state.user?.email || '')}" required /></label><label><span>Message</span><textarea name="message" rows="6" required placeholder="Tell us how we can help..."></textarea></label><button class="button button--primary button--full" type="submit">Send message <span>→</span></button></form></div></section>`;
 }
@@ -378,9 +447,58 @@ function renderMain() {
   if (state.route.name === 'book') return renderBooking();
   if (state.route.name === 'login' || state.route.name === 'register') return renderAuth(state.route.name);
   if (state.route.name === 'bookings') return renderBookings();
+  if (state.route.name === 'messages') return renderMessages();
   if (state.route.name === 'contact') return renderContact();
   if (state.route.name === 'admin') return renderAdmin();
   return renderHome();
+}
+
+function stopChatMessageSubscription() {
+  if (typeof state.chatMessagesUnsubscribe === 'function') state.chatMessagesUnsubscribe();
+  state.chatMessagesUnsubscribe = null;
+  state.chatMessagesSubscriptionId = null;
+  state.chatMessages = [];
+  state.chatMessagesLoading = false;
+}
+
+function stopChatSubscriptions() {
+  if (typeof state.chatConversationsUnsubscribe === 'function') state.chatConversationsUnsubscribe();
+  state.chatConversationsUnsubscribe = null;
+  state.chatSubscriptionsFor = null;
+  stopChatMessageSubscription();
+  state.chatConversations = [];
+  state.chatSelectedId = null;
+  state.chatLoading = false;
+}
+
+function startChatSubscriptions() {
+  if (!state.user || state.route.name !== 'messages') return;
+  if (state.chatSubscriptionsFor !== state.user.uid) {
+    stopChatSubscriptions();
+    state.chatSubscriptionsFor = state.user.uid;
+    state.chatLoading = true;
+    state.chatConversationsUnsubscribe = observeChatConversations(state.user, (conversations) => {
+      state.chatConversations = conversations;
+      state.chatLoading = false;
+      const routeId = state.route?.param;
+      const firstId = conversations[0]?.id || (state.user.role === 'customer' ? state.user.uid : null);
+      state.chatSelectedId = routeId || state.chatSelectedId || firstId;
+      render();
+    });
+  }
+
+  const selectedId = state.route.param || state.chatSelectedId || (state.user.role === 'customer' ? state.user.uid : null);
+  if (!selectedId || state.chatMessagesSubscriptionId === selectedId) return;
+  stopChatMessageSubscription();
+  state.chatMessagesSubscriptionId = selectedId;
+  state.chatMessagesLoading = true;
+  state.chatMessagesUnsubscribe = observeChatMessages(state.user, selectedId, (messages) => {
+    state.chatMessages = messages;
+    state.chatMessagesLoading = false;
+    render();
+    const container = document.querySelector('.chat-messages');
+    if (container) container.scrollTop = container.scrollHeight;
+  });
 }
 
 function render() {
@@ -394,6 +512,7 @@ function render() {
   if (state.route.name === 'book' && state.activeRoom && state.availabilityAttemptedFor !== state.activeRoom.id && !state.availabilityLoading) loadAvailability(state.activeRoom.id);
   if (state.route.name === 'bookings' && state.user && state.bookingsLoadedFor !== state.user.uid && !state.bookingsLoading) loadBookings();
   if (state.route.name === 'admin' && state.user?.role === 'admin' && state.adminLoadedFor !== state.user.uid && !state.adminLoading) loadAdminBookings();
+  if (state.route.name === 'messages' && state.user) startChatSubscriptions();
 }
 
 async function loadRooms() {
@@ -501,6 +620,21 @@ async function handleSubmit(event) {
       navigate('#/bookings');
       return;
     }
+    if (form.dataset.form === 'chat-message') {
+      const conversationId = state.chatSelectedId || state.route.param || state.user.uid;
+      const selectedFile = formData.get('image');
+      const file = selectedFile?.size ? selectedFile : state.chatFile;
+      const sentMessage = await sendChatMessage(state.user, conversationId, formData.get('message'), file);
+      state.chatMessages = [...state.chatMessages.filter((message) => message.id !== sentMessage.id), sentMessage];
+      state.chatDraft = '';
+      state.chatFile = null;
+      state.chatFilePreview = '';
+      setToast('Message sent.', 'success');
+      render();
+      const container = document.querySelector('.chat-messages');
+      if (container) container.scrollTop = container.scrollHeight;
+      return;
+    }
     if (form.dataset.form === 'contact') {
       await sendContactMessage(state.user, String(formData.get('name')), String(formData.get('email')), String(formData.get('message')));
       form.reset();
@@ -513,7 +647,46 @@ async function handleSubmit(event) {
   }
 }
 
+function handleInput(event) {
+  if (event.target.matches('[data-chat-draft]')) state.chatDraft = event.target.value;
+}
+
+function handleChange(event) {
+  const input = event.target;
+  if (!input.matches('[data-chat-file]')) return;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!String(file.type || '').startsWith('image/')) {
+    setToast('Please choose an image file.', 'error');
+    input.value = '';
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    setToast('Images must be 5 MB or smaller.', 'error');
+    input.value = '';
+    return;
+  }
+  if (state.chatFilePreview?.startsWith('blob:')) URL.revokeObjectURL(state.chatFilePreview);
+  state.chatFile = file;
+  state.chatFilePreview = URL.createObjectURL(file);
+  render();
+}
+
 async function handleClick(event) {
+  const chatConversation = event.target.closest('[data-chat-conversation]');
+  if (chatConversation) {
+    state.chatSelectedId = chatConversation.dataset.chatConversation;
+    navigate(`#/messages/${state.chatSelectedId}`);
+    return;
+  }
+  const removeChatFile = event.target.closest('[data-action="remove-chat-file"]');
+  if (removeChatFile) {
+    if (state.chatFilePreview?.startsWith('blob:')) URL.revokeObjectURL(state.chatFilePreview);
+    state.chatFile = null;
+    state.chatFilePreview = '';
+    render();
+    return;
+  }
   const roomButton = event.target.closest('[data-room]');
   if (roomButton) {
     resetBooking(roomButton.dataset.room);
@@ -553,6 +726,7 @@ async function handleClick(event) {
   }
   const logoutButton = event.target.closest('[data-action="logout"]');
   if (logoutButton) {
+    stopChatSubscriptions();
     await signOut();
     state.user = null;
     state.bookings = [];
@@ -592,6 +766,8 @@ async function handleClick(event) {
 }
 
 app.addEventListener('submit', handleSubmit);
+app.addEventListener('input', handleInput);
+app.addEventListener('change', handleChange);
 app.addEventListener('click', handleClick);
 window.addEventListener('hashchange', () => {
   const route = parseRoute();
@@ -604,10 +780,17 @@ window.addEventListener('hashchange', () => {
     state.adminBookings = [];
     state.adminLoadedFor = null;
   }
+  if (route.name !== 'messages') {
+    stopChatSubscriptions();
+    state.chatDraft = '';
+    state.chatFile = null;
+    state.chatFilePreview = '';
+  }
   render();
 });
 
 observeUser((user) => {
+  stopChatSubscriptions();
   state.user = user;
   if (state.route?.name === 'bookings' || state.route?.name === 'admin') {
     state.bookings = [];

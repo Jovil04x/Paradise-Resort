@@ -68,5 +68,26 @@ service cloud.firestore {
       allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
       allow update, delete: if isAdmin();
     }
+
+    match /conversations/{conversationId} {
+      allow create: if signedIn() &&
+        conversationId == request.auth.uid &&
+        request.resource.data.customerUid == request.auth.uid;
+      allow read: if isAdmin() ||
+        (signedIn() && resource.data.customerUid == request.auth.uid);
+      allow update: if isAdmin() ||
+        (signedIn() && resource.data.customerUid == request.auth.uid &&
+          request.resource.data.customerUid == resource.data.customerUid);
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isAdmin() ||
+          (signedIn() && get(/databases/$(database)/documents/conversations/$(conversationId)).data.customerUid == request.auth.uid);
+        allow create: if signedIn() &&
+          request.resource.data.senderUid == request.auth.uid &&
+          (isAdmin() || get(/databases/$(database)/documents/conversations/$(conversationId)).data.customerUid == request.auth.uid);
+        allow update, delete: if false;
+      }
+    }
   }
 }
